@@ -1,0 +1,3 @@
+# The bot uses Playwright to drive a real browser. The web control panel
+# (server.py) is pure standard library and needs nothing here.
+playwright==1.63.0

@@ -1,0 +1,274 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Skyway Tee Time Bot</title>
+<style>
+  :root {
+    --green:        #1f7a3d;
+    --green-deep:   #0e3d1e;
+    --green-mid:    #155c2c;
+    --green-bright: #2fa855;
+    --green-tint:   #eaf5ee;
+    --green-tint2:  #dcefe2;
+    --card:  #ffffff;
+    --line:  #cfe3d5;
+    --text:  #12271a;
+    --muted: #5c7264;
+    --red:   #c0392b;
+    --amber: #b8860b;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; font: 15px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    color: var(--text);
+    background: linear-gradient(160deg, #0e3d1e 0%, #155c2c 45%, #1f7a3d 100%);
+    min-height: 100vh;
+  }
+  .wrap { max-width: 580px; margin: 0 auto; padding: 34px 20px 60px; }
+  header { display: flex; align-items: center; gap: 12px; margin-bottom: 24px; color: #fff; }
+  header .ball { font-size: 30px; }
+  header h1 { font-size: 22px; margin: 0; font-weight: 700; letter-spacing: -.01em; }
+  header .tag { font-size: 13px; opacity: .8; margin-left: auto; }
+  .card {
+    background: var(--card); border: 1px solid var(--line); border-radius: 14px;
+    padding: 22px; margin-bottom: 18px; box-shadow: 0 6px 24px rgba(8, 40, 20, .18);
+  }
+  h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .07em;
+       color: var(--green-mid); margin: 0 0 16px; font-weight: 700; }
+  label { display: block; font-size: 13px; color: var(--muted); margin-bottom: 5px; font-weight: 500; }
+  input, select {
+    width: 100%; padding: 10px 12px; border: 1px solid var(--line); border-radius: 9px;
+    font-size: 15px; background: #fbfefc; color: var(--text);
+  }
+  input:focus, select:focus { outline: 2px solid var(--green-bright); border-color: var(--green-bright); }
+  .row { display: flex; gap: 12px; }
+  .row > div { flex: 1; }
+  .field { margin-bottom: 15px; }
+  .checkbox { display: flex; align-items: center; gap: 8px; }
+  .checkbox input { width: auto; accent-color: var(--green); }
+  .checkbox label { margin: 0; }
+  .btns { display: flex; gap: 10px; margin-top: 6px; }
+  button {
+    flex: 1; padding: 13px; border: none; border-radius: 9px; font-size: 15px;
+    font-weight: 650; cursor: pointer; transition: background .15s, opacity .15s, transform .05s;
+  }
+  button:active { transform: translateY(1px); }
+  #startBtn { background: var(--green); color: #fff; }
+  #startBtn:hover { background: var(--green-mid); }
+  #stopBtn { background: #fff; color: var(--green-mid); border: 1.5px solid var(--green); }
+  #stopBtn:hover { background: var(--green-tint); }
+  button:disabled { opacity: .4; cursor: not-allowed; }
+
+  /* Status card — green forward */
+  .status { border-top: 4px solid var(--green); }
+  .status-head { display: flex; align-items: center; gap: 11px; margin-bottom: 10px; }
+  .dot { width: 12px; height: 12px; border-radius: 50%; background: var(--muted); flex: none; }
+  .dot.on     { background: var(--green-bright); box-shadow: 0 0 0 4px rgba(47,168,85,.22); animation: pulse 1.6s infinite; }
+  .dot.booked { background: var(--green); box-shadow: 0 0 0 4px rgba(31,122,61,.25); }
+  .dot.error  { background: var(--red); }
+  .dot.waiting{ background: var(--amber); }
+  @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: .4; } }
+  .state-label { font-weight: 700; font-size: 17px; text-transform: capitalize; color: var(--green-deep); }
+  .msg { color: var(--muted); margin: 2px 0 0; }
+  .booked-box {
+    margin-top: 16px; padding: 18px; border-radius: 12px; text-align: center;
+    background: linear-gradient(150deg, var(--green-tint) 0%, var(--green-tint2) 100%);
+    border: 1px solid var(--line);
+  }
+  .booked-box .time { font-size: 30px; font-weight: 800; color: var(--green-deep); letter-spacing: -.01em; }
+  .booked-box .sub { color: var(--green-mid); font-size: 13px; margin-top: 4px; }
+  .booked-box .email { color: var(--muted); font-size: 12px; margin-top: 8px; }
+  .meta { display: flex; justify-content: space-between; font-size: 12px;
+          color: var(--muted); margin-top: 14px; }
+  .toast {
+    position: fixed; bottom: 22px; left: 50%; transform: translateX(-50%);
+    background: var(--green-deep); color: #fff; padding: 11px 20px; border-radius: 9px;
+    font-size: 14px; opacity: 0; pointer-events: none; transition: opacity .2s;
+    box-shadow: 0 6px 20px rgba(8,40,20,.35);
+  }
+  .toast.show { opacity: 1; }
+  .hint { font-size: 12px; color: var(--muted); margin: -6px 0 0; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <span class="ball">⛳</span>
+    <h1>Skyway Tee Time Bot</h1>
+    <span class="tag">Chronogolf</span>
+  </header>
+
+  <!-- Live status -->
+  <div class="card status">
+    <h2>Status</h2>
+    <div class="status-head">
+      <span class="dot" id="dot"></span>
+      <span class="state-label" id="stateLabel">Loading…</span>
+    </div>
+    <p class="msg" id="statusMsg"></p>
+    <div class="booked-box" id="bookedBox" style="display:none">
+      <div class="time" id="bookedTime"></div>
+      <div class="sub" id="bookedSub"></div>
+      <div class="email" id="bookedEmail"></div>
+    </div>
+    <div class="meta">
+      <span id="watching"></span>
+      <span id="updated"></span>
+    </div>
+  </div>
+
+  <!-- Controls -->
+  <div class="card">
+    <h2>Booking settings</h2>
+    <div class="field">
+      <label for="date">Play date</label>
+      <input type="date" id="date">
+    </div>
+    <div class="row">
+      <div class="field">
+        <label for="earliest">Earliest tee time</label>
+        <input type="time" id="earliest" value="07:00">
+      </div>
+      <div class="field">
+        <label for="latest">Latest tee time</label>
+        <input type="time" id="latest" value="09:30">
+      </div>
+    </div>
+    <div class="row">
+      <div class="field">
+        <label for="players">Players</label>
+        <select id="players">
+          <option>1</option><option selected>2</option><option>3</option><option>4</option>
+        </select>
+      </div>
+      <div class="field">
+        <label for="startAt">Start at (optional)</label>
+        <input type="time" id="startAt" placeholder="--:--">
+      </div>
+    </div>
+    <div class="field">
+      <label for="email">Confirmation email</label>
+      <input type="email" id="email" placeholder="you@example.com">
+      <p class="hint">Emailed the moment a tee time is booked. Leave blank to use
+        <code>SKYWAY_NOTIFY_EMAIL</code>. Requires SMTP config — see README.</p>
+    </div>
+    <div class="field checkbox">
+      <input type="checkbox" id="dryRun">
+      <label for="dryRun">Dry run (find a slot but stop before the final confirm)</label>
+    </div>
+    <div class="btns">
+      <button id="startBtn">Turn on</button>
+      <button id="stopBtn">Turn off</button>
+    </div>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+const $ = id => document.getElementById(id);
+const STATES = {
+  idle:      { label: "Off",        cls: "" },
+  starting:  { label: "Starting",   cls: "on" },
+  waiting:   { label: "Waiting",    cls: "waiting" },
+  searching: { label: "Searching",  cls: "on" },
+  found:     { label: "Found slot", cls: "on" },
+  booking:   { label: "Booking",    cls: "on" },
+  booked:    { label: "Booked!",    cls: "booked" },
+  gave_up:   { label: "Gave up",    cls: "" },
+  stopped:   { label: "Off",        cls: "" },
+  error:     { label: "Error",      cls: "error" },
+};
+const EMAIL_KEY = "skyway_confirmation_email";
+
+function toast(msg) {
+  const t = $("toast");
+  t.textContent = msg; t.classList.add("show");
+  clearTimeout(t._h); t._h = setTimeout(() => t.classList.remove("show"), 2800);
+}
+
+async function refresh() {
+  let s;
+  try {
+    s = await (await fetch("/api/status")).json();
+  } catch (e) { return; }
+
+  const info = STATES[s.state] || { label: s.state || "Unknown", cls: "" };
+  $("dot").className = "dot " + info.cls;
+  $("stateLabel").textContent = info.label;
+  $("statusMsg").textContent = s.message || "";
+
+  // Booking confirmation
+  if (s.state === "booked" && s.booked_time) {
+    $("bookedBox").style.display = "";
+    $("bookedTime").textContent = s.booked_time;
+    $("bookedSub").textContent =
+      `Confirmed for ${s.booked_date || ""} · ${s.players || ""} player(s)` +
+      (s.booked_at ? ` · at ${s.booked_at.replace("T", " ")}` : "");
+    if (s.email_sent === true) {
+      $("bookedEmail").textContent = "✉︎ Confirmation email sent — " + (s.email_detail || "");
+    } else if (s.email_detail) {
+      $("bookedEmail").textContent = "✉︎ Email not sent — " + s.email_detail;
+    } else {
+      $("bookedEmail").textContent = "";
+    }
+  } else {
+    $("bookedBox").style.display = "none";
+  }
+
+  // Watching line
+  if (s.date && (s.running || s.state === "booked")) {
+    $("watching").textContent = `${s.date} · ${s.earliest}–${s.latest} · ${s.players}p`;
+  } else {
+    $("watching").textContent = "";
+  }
+  $("updated").textContent = s.updated_at ? "updated " + s.updated_at.replace("T", " ") : "";
+
+  // Button enablement
+  $("startBtn").disabled = !!s.running;
+  $("stopBtn").disabled = !s.running;
+  $("startBtn").textContent = s.running ? "Running…" : "Turn on";
+}
+
+$("startBtn").onclick = async () => {
+  localStorage.setItem(EMAIL_KEY, $("email").value);
+  const cfg = {
+    date: $("date").value,
+    earliest: $("earliest").value,
+    latest: $("latest").value,
+    players: parseInt($("players").value, 10),
+    start_at: $("startAt").value,
+    notify_email: $("email").value,
+    dry_run: $("dryRun").checked,
+  };
+  const r = await fetch("/api/start", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(cfg),
+  });
+  const data = await r.json();
+  toast(data.message);
+  refresh();
+};
+
+$("stopBtn").onclick = async () => {
+  const r = await fetch("/api/stop", { method: "POST" });
+  const data = await r.json();
+  toast(data.message);
+  refresh();
+};
+
+// Convenience defaults: date = tomorrow, remember the email address.
+(() => {
+  const d = new Date(); d.setDate(d.getDate() + 1);
+  $("date").value = d.toISOString().slice(0, 10);
+  const saved = localStorage.getItem(EMAIL_KEY);
+  if (saved) $("email").value = saved;
+})();
+
+refresh();
+setInterval(refresh, 3000);
+</script>
+</body>
+</html>

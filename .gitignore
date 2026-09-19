@@ -1,0 +1,15 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# Local config & secrets
+.env
+
+# Runtime artifacts
+status.json
+bot.pid
+skyway_bot_screens/
+
+# Saved browser session (contains your logged-in Chronogolf cookies)
+.skyway_bot_profile/
