@@ -44,7 +44,10 @@ from playwright.sync_api import TimeoutError as PWTimeout
 from playwright.sync_api import sync_playwright
 
 CLUB_URL = "https://www.chronogolf.com/club/skyway-golf-course"
-PROFILE_DIR = Path.home() / ".skyway_bot_profile"   # saved browser session (your login)
+PROFILE_DIR = Path.home() / ".skyway_bot_profile"   # real-Chrome profile dir
+# One-time captured login (cookies + storage), reused so the bot doesn't have
+# to sign in again and re-trigger Cloudflare. Lives in $HOME, never committed.
+SESSION_FILE = Path.home() / ".skyway_session.json"
 SHOTS = Path("skyway_bot_screens")
 MIN_POLL_SECONDS = 20                                # be a polite guest
 
@@ -125,9 +128,15 @@ DONE = re.compile(
     re.I)
 
 
-def build_url(date_str: str, players: int) -> str:
-    # If Chronogolf changes its query params, this is the one line to fix.
-    return f"{CLUB_URL}?date={date_str}&step=teetimes&holes=9&groupSize={players}"
+# Skyway's course UUID, used to query its tee-time API directly.
+COURSE_ID = "0b833d14-8c0d-46ca-82e6-7b992de4761e"
+TEETIME_API = "https://www.chronogolf.com/marketplace/v2/teetimes"
+
+
+def build_url(date_str: str, players: int, holes: int = 9) -> str:
+    # The public booking page for a date/party size (used to drive the UI).
+    return (f"{CLUB_URL}?date={date_str}&step=teetimes"
+            f"&holes={holes}&groupSize={players}")
 
 
 # ---------- availability ----------
@@ -175,42 +184,42 @@ def hhmm(s):
     return int(h) * 60 + int(m)
 
 
-def check(page, args):
-    """Load the tee sheet, return sorted minutes-after-midnight of matching slots."""
-    responses = []
+def fetch_teetimes(page, date_str, players, holes=9, max_pages=4):
+    """Query Skyway's tee-time API directly and return the raw slot dicts.
 
-    def grab(resp):
-        if "teetime" in resp.url.lower():
-            responses.append(resp)
-
-    page.on("response", grab)
-    try:
-        page.goto(build_url(args.date, args.players), wait_until="domcontentloaded")
-        deadline = time.time() + 20
-        while not responses and time.time() < deadline:
-            page.wait_for_timeout(500)
-        page.wait_for_timeout(1500)  # let any follow-up requests land
-    finally:
-        page.remove_listener("response", grab)
-
+    Reading availability needs no login, and calling the API is far more
+    reliable than trying to intercept the request the page happens to fire.
+    """
+    if "chronogolf.com" not in page.url:
+        page.goto(CLUB_URL, wait_until="domcontentloaded", timeout=45000)
+        page.wait_for_timeout(1000)
     slots = []
-    for resp in responses:
+    for pg in range(1, max_pages + 1):
+        url = (f"{TEETIME_API}?start_date={date_str}&free_slots={players}"
+               f"&course_ids={COURSE_ID}&holes={holes}&page={pg}")
+        txt = page.evaluate(
+            "async (u) => (await fetch(u, {headers: {accept: 'application/json'}})).text()",
+            url)
         try:
-            slots.extend(find_slots(resp.json()))
-        except Exception:
-            continue
+            data = json.loads(txt)
+        except (ValueError, TypeError):
+            break
+        page_slots = data.get("teetimes") if isinstance(data, dict) else None
+        if not page_slots:
+            break
+        slots.extend(page_slots)
+        if len(page_slots) < 24:  # short page => no more results
+            break
+    return slots
 
-    if not responses:
-        print("  ! No tee time request seen. Run without --headless and look at the page;"
-              " build_url() may need updating.")
+
+def check(page, args):
+    """Return sorted minutes-after-midnight of matching Skyway slots."""
+    try:
+        slots = fetch_teetimes(page, args.date, args.players, holes=args.holes)
+    except Exception as e:
+        print(f"  ! teetime fetch failed: {type(e).__name__}: {e}")
         return []
-
-    dated = [s for s in slots if s.get("date")]
-    if dated and not any(str(s["date"]).startswith(args.date) for s in dated):
-        print(f"  ! Page returned tee times for {dated[0]['date']}, not {args.date}."
-              " The date isn't bookable yet, or build_url() needs updating.")
-        return []
-
     lo, hi = hhmm(args.earliest), hhmm(args.latest)
     hits = set()
     for s in slots:
@@ -281,16 +290,16 @@ LOGIN_URL = "https://www.chronogolf.com/login"
 def is_logged_in(page, timeout_ms=12000):
     """True if a signed-in account shows up within the timeout.
 
-    Polls, because Chronogolf renders its header client-side and 'My Account'
-    can take a moment to appear after navigation.
+    Polls for the account menu, because Chronogolf renders its header
+    client-side and 'My Account' can take a moment to appear. We deliberately
+    do NOT early-return on seeing 'Log In': the logged-out header can flash
+    briefly while the session is validated, which would false-negative.
     """
     deadline = time.time() + timeout_ms / 1000
     while time.time() < deadline:
         body = page.inner_text("body") if page.query_selector("body") else ""
-        if "My Account" in body or "My account" in body:
+        if "My Account" in body or "My account" in body or "/dashboard" in page.url:
             return True
-        if "Log In" in body or "Log in" in body:  # header rendered, logged out
-            return False
         page.wait_for_timeout(500)
     return False
 
@@ -346,6 +355,51 @@ def ensure_logged_in(page, tries=1):
         if _attempt_login(page, user, password):
             return True
     return False
+
+
+# ---------- session capture & reuse ----------
+# You solve the "verify you are human" check ONCE; we save the resulting
+# authenticated session and re-inject it on later runs so the bot never has to
+# log in again (and so never re-triggers Cloudflare). No control is bypassed —
+# a human genuinely passed the check; we just don't throw the session away.
+
+def capture_session(ctx, page):
+    """Save cookies + local/session storage from a logged-in page."""
+    storage = page.evaluate(
+        """() => ({
+            local: Object.fromEntries(Object.entries(localStorage)),
+            session: Object.fromEntries(Object.entries(sessionStorage)),
+        })""")
+    data = {"cookies": ctx.cookies(), "storage": storage}
+    SESSION_FILE.write_text(json.dumps(data))
+    try:
+        SESSION_FILE.chmod(0o600)  # it's a login; keep it private
+    except OSError:
+        pass
+    print(f"  Session captured to {SESSION_FILE}")
+
+
+def load_session(ctx):
+    """Re-inject a previously captured session into a fresh context.
+
+    Returns True if a session file was applied (not whether it's still valid).
+    """
+    if not SESSION_FILE.exists():
+        return False
+    try:
+        data = json.loads(SESSION_FILE.read_text())
+    except (OSError, ValueError):
+        return False
+    if data.get("cookies"):
+        ctx.add_cookies(data["cookies"])
+    storage = data.get("storage") or {}
+    # Restore localStorage/sessionStorage on every page load (origin-scoped).
+    ctx.add_init_script(
+        "(() => { try { const s = " + json.dumps(storage) + ";"
+        " for (const [k, v] of Object.entries(s.local || {})) localStorage.setItem(k, v);"
+        " for (const [k, v] of Object.entries(s.session || {})) sessionStorage.setItem(k, v);"
+        " } catch (e) {} })()")
+    return True
 
 
 # ---------- booking ----------
@@ -420,6 +474,124 @@ def book(page, minutes, args):
     return False
 
 
+# ---------- member (resident) booking ----------
+# Members book only through the dashboard widget:
+#   Book on Calendar -> Date -> Players -> Continue -> Choose <time> ->
+#   Continue -> agree to terms -> Confirm Reservation.
+
+DASHBOARD_MEMBERSHIPS = "https://www.chronogolf.com/dashboard/#/memberships"
+
+
+def choose_time(page, time_label, timeout_ms=20000):
+    """Click the 'Choose' on the tee-time row for an exact label like '9:00 AM'."""
+    deadline = time.time() + timeout_ms / 1000
+    while time.time() < deadline:
+        ch = page.get_by_text("Choose", exact=False)
+        for i in range(ch.count()):
+            el = ch.nth(i)
+            try:
+                row = el.evaluate(
+                    "e => { let p = e; for (let k=0;k<6;k++){ p = p.parentElement;"
+                    " if (!p) break; if (/[0-9]{1,2}:[0-9]{2}/.test(p.innerText))"
+                    " return p.innerText; } return ''; }")
+            except Exception:
+                row = ""
+            if row.strip().startswith(time_label):
+                el.click()
+                return True
+        page.wait_for_timeout(1000)
+    return False
+
+
+def book_member(page, date_str, time_label, players, dry_run=False):
+    """Book one resident tee time through the dashboard widget.
+
+    Returns (ok, detail). Self-contained: starts from the memberships page so it
+    can be called repeatedly to book several tee times.
+    """
+    day = str(datetime.strptime(date_str, "%Y-%m-%d").day)
+    # Reset to a clean memberships page (clears any widget left open by a prior
+    # booking) — a hash-route change alone won't re-render, so force a reload.
+    page.goto(DASHBOARD_MEMBERSHIPS, wait_until="domcontentloaded", timeout=45000)
+    page.wait_for_timeout(1500)
+    page.reload(wait_until="domcontentloaded")
+    page.wait_for_timeout(2500)
+    btn = page.get_by_role("button", name="Book on Calendar").first
+    btn.wait_for(state="visible", timeout=20000)
+    btn.click()
+    page.wait_for_timeout(2500)
+    page.get_by_text(day, exact=True).first.click()          # date
+    page.wait_for_timeout(1800)
+    page.get_by_text(str(players), exact=True).first.click()  # party size
+    page.wait_for_timeout(1800)
+    page.get_by_role("button", name="Continue").first.click()  # past player types
+    page.wait_for_timeout(3500)
+
+    if not choose_time(page, time_label):
+        return False, f"{time_label} not available"
+    page.wait_for_timeout(2500)
+    page.get_by_role("button", name="Continue").first.click()  # to final review
+    page.wait_for_timeout(5000)
+
+    # Agree to the booking policy.
+    try:
+        page.get_by_role("checkbox").first.check(timeout=6000)
+    except Exception:
+        try:
+            page.get_by_text("I agree", exact=False).first.click()
+        except Exception:
+            pass
+    page.wait_for_timeout(1000)
+
+    tag = re.sub(r"\W+", "", time_label)
+    if dry_run:
+        print(f"  [dry-run] reached Confirm for {time_label}: {shot(page, 'dryrun_'+tag)}")
+        return True, f"[dry-run] reached confirm for {time_label}"
+
+    status = []
+    page.on("response", lambda r: status.append(r.status)
+            if ("marketplace/reservations" in r.url and r.request.method == "POST")
+            else None)
+    page.get_by_role("button", name=re.compile("Confirm Reservation", re.I)).first.click()
+    page.wait_for_timeout(9000)
+    body = page.inner_text("body") if page.query_selector("body") else ""
+    ok = "successfully created" in body.lower() or 201 in status
+    conf = ""
+    m = re.search(r"Booking\s+([A-Z0-9]{4}-[A-Z0-9]{4})", body)
+    if m:
+        conf = m.group(1)
+    print(f"  {'Booked' if ok else 'FAILED'} {time_label}: {shot(page, 'booked_'+tag)}")
+    return ok, (f"confirmed {conf}" if ok else "confirmation not detected")
+
+
+def book_member_times(page, args):
+    """Book each exact time in args.times as its own resident reservation."""
+    results = []
+    for raw in [t.strip() for t in args.times.split(",") if t.strip()]:
+        lbl = label(hhmm(raw))
+        print(f"[{datetime.now():%H:%M:%S}] Booking {lbl} on {args.date} "
+              f"for {args.players}...")
+        emit(state="booking", message=f"Booking {lbl} on {args.date}...")
+        try:
+            ok, detail = book_member(page, args.date, lbl, args.players,
+                                     dry_run=args.dry_run)
+        except Exception as e:
+            ok, detail = False, f"{type(e).__name__}: {e}"
+        print(f"  -> {'OK' if ok else 'FAIL'}: {detail}")
+        results.append((lbl, ok, detail))
+        if ok and not args.dry_run and args.notify_email:
+            subject = f"⛳ Tee time booked: {lbl} on {args.date}"
+            _, sdetail = send_confirmation_email(
+                args.notify_email, subject,
+                f"Booked {lbl} on {args.date} for {args.players}. {detail}\n")
+            print(f"  email: {sdetail}")
+    booked = [r for r in results if r[1]]
+    emit(state="booked" if booked else "error",
+         message="; ".join(f"{l}: {'ok' if ok else 'fail'}" for l, ok, _ in results),
+         booked_date=args.date)
+    return results
+
+
 # ---------- main ----------
 
 def wait_until(start_at):
@@ -435,11 +607,14 @@ def wait_until(start_at):
 def main():
     load_env_file()
     ap = argparse.ArgumentParser(description="Skyway Golf Course tee time bot")
-    ap.add_argument("--login", action="store_true", help="open a browser to log in, then exit")
+    ap.add_argument("--login", action="store_true",
+                    help="open a browser to log in once; the session is captured "
+                         "and reused so later runs don't sign in again")
     ap.add_argument("--date", help="play date, YYYY-MM-DD")
     ap.add_argument("--earliest", default="06:00", help="earliest tee time, HH:MM (24h)")
     ap.add_argument("--latest", default="10:00", help="latest tee time, HH:MM (24h)")
     ap.add_argument("--players", type=int, default=2, choices=[1, 2, 3, 4])
+    ap.add_argument("--holes", type=int, default=9, choices=[9, 18], help="9 or 18 holes")
     ap.add_argument("--start-at", help="don't start until this local time today, HH:MM")
     ap.add_argument("--poll", type=int, default=60, help="seconds between checks")
     ap.add_argument("--max-minutes", type=int, default=180, help="give up after this long")
@@ -451,6 +626,8 @@ def main():
                          "'msedge' to force one, or '' to force bundled Chromium.")
     ap.add_argument("--status-file", help="write live JSON status here (for the web frontend)")
     ap.add_argument("--notify-email", help="email address to send a booking confirmation to")
+    ap.add_argument("--times", help="resident booking: comma-separated exact tee "
+                    "times to book, HH:MM (e.g. 09:00,11:30)")
     args = ap.parse_args()
 
     if not args.login:
@@ -470,11 +647,22 @@ def main():
         page = ctx.pages[0] if ctx.pages else ctx.new_page()
 
         if args.login:
-            page.goto(CLUB_URL)
-            input("Log in to Chronogolf in the browser window, then press Enter here... ")
+            page.goto(LOGIN_URL, wait_until="domcontentloaded")
+            print("\nA Chrome window is open. Log in to Chronogolf and solve the")
+            print("'verify you are human' check if it appears.")
+            input("Once you can see your account / dashboard, press Enter here... ")
+            page.goto(CLUB_URL, wait_until="domcontentloaded")
+            if is_logged_in(page, timeout_ms=15000):
+                capture_session(ctx, page)
+                print("Login captured. Future runs will reuse it — no re-login.")
+            else:
+                print("! That didn't look logged in; nothing captured. Try again.")
             ctx.close()
-            print(f"Session saved to {PROFILE_DIR}")
             return
+
+        # Reuse a previously captured login so we don't sign in (and re-trigger
+        # Cloudflare) again.
+        reused = load_session(ctx)
 
         if args.start_at:
             emit(state="waiting", message=f"Waiting until {args.start_at} to start.")
@@ -482,9 +670,17 @@ def main():
 
         emit(state="starting", message="Signing in to Chronogolf...")
         if not ensure_logged_in(page):
-            print("  ! Could not sign in. Check CHRONO_USER/CHRONO_PASS, or run "
-                  "--login by hand.")
-            emit(state="error", message="Could not sign in to Chronogolf.")
+            hint = ("Session expired — run `--login` once to refresh it."
+                    if reused else
+                    "Run `--login` once to capture your session.")
+            print(f"  ! Not signed in. {hint}")
+            emit(state="error", message=f"Not signed in. {hint}")
+            ctx.close()
+            return
+
+        # Resident booking of specific tee times (dashboard widget flow).
+        if args.times:
+            book_member_times(page, args)
             ctx.close()
             return
 

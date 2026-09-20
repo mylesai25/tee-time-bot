@@ -1,0 +1,8 @@
+===================================================================
+FIRED: 2026-09-20 00:14:53 EDT
+Using browser channel: chrome
+[00:14:55] Booking 9:00 AM on 2026-09-27 for 4...
+  -> FAIL: 9:00 AM not available
+[00:18:08] Booking 11:30 AM on 2026-09-27 for 4...
+  -> FAIL: 11:30 AM not available
+DONE: 2026-09-20 00:27:05 EDT (exit 0)
