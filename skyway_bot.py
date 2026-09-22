@@ -80,7 +80,9 @@ def send_confirmation_email(to_addr, subject, body):
         SKYWAY_SMTP_PORT   default 587 (STARTTLS)
     """
     user = os.environ.get("SKYWAY_SMTP_USER")
-    password = os.environ.get("SKYWAY_SMTP_PASS")
+    # Gmail displays app passwords in 4 space-separated groups; the real
+    # password has no spaces, so strip them.
+    password = (os.environ.get("SKYWAY_SMTP_PASS") or "").replace(" ", "")
     if not to_addr or not user or not password:
         return False, ("email not configured (set SKYWAY_SMTP_USER, "
                        "SKYWAY_SMTP_PASS and a recipient)")
@@ -256,11 +258,16 @@ def launch_context(pw, args, headless):
     shell). Driving the installed Google Chrome with automation flags stripped
     behaves like a normal browser, so its challenge can be solved by hand.
     """
+    launch_args = list(STEALTH_ARGS)
+    if sys.platform.startswith("linux"):
+        # Headless Linux/servers (e.g. EC2) have a tiny /dev/shm and often run as
+        # a user where Chromium's sandbox can't start — these prevent crashes.
+        launch_args += ["--no-sandbox", "--disable-dev-shm-usage", "--disable-gpu"]
     opts = dict(
         user_data_dir=str(PROFILE_DIR),
         headless=headless,
         viewport={"width": 1280, "height": 900},
-        args=STEALTH_ARGS,
+        args=launch_args,
         ignore_default_args=["--enable-automation"],
     )
     if args.channel is None:
@@ -565,30 +572,84 @@ def book_member(page, date_str, time_label, players, dry_run=False):
 
 
 def book_member_times(page, args):
-    """Book each exact time in args.times as its own resident reservation."""
+    """Book each preferred time in args.times, substituting the nearest open
+    foursome slot (within 2h) when a time isn't available.
+
+    Each round after the first is placed relative to the round actually
+    booked: at least 3 hours after it (MIN_GAP), and ideally the same gap that
+    was originally requested between the two times (e.g. 7:00 -> 10:30 = 3.5h).
+    So if the first round slips to 7:20, the second aims for ~10:50, not 10:30.
+    """
+    NEAREST_WINDOW = 120   # substitute a slot within 2h of the wanted time
+    MIN_GAP = 180          # each round must be >= 3h after the previous one
+
+    given = [hhmm(t.strip()) for t in args.times.split(",") if t.strip()]
+
+    # Times with room for the whole party (public API), as minutes-after-midnight.
+    try:
+        slots = fetch_teetimes(page, args.date, args.players, holes=args.holes)
+    except Exception as e:
+        print(f"  ! could not read availability: {type(e).__name__}: {e}")
+        slots = []
+    available = sorted({m for m in (slot_minutes(s) for s in slots) if m is not None})
+
+    booked_mins = []
     results = []
-    for raw in [t.strip() for t in args.times.split(",") if t.strip()]:
-        lbl = label(hhmm(raw))
-        print(f"[{datetime.now():%H:%M:%S}] Booking {lbl} on {args.date} "
-              f"for {args.players}...")
-        emit(state="booking", message=f"Booking {lbl} on {args.date}...")
-        try:
-            ok, detail = book_member(page, args.date, lbl, args.players,
-                                     dry_run=args.dry_run)
-        except Exception as e:
-            ok, detail = False, f"{type(e).__name__}: {e}"
-        print(f"  -> {'OK' if ok else 'FAIL'}: {detail}")
-        results.append((lbl, ok, detail))
-        if ok and not args.dry_run and args.notify_email:
-            subject = f"⛳ Tee time booked: {lbl} on {args.date}"
-            _, sdetail = send_confirmation_email(
-                args.notify_email, subject,
-                f"Booked {lbl} on {args.date} for {args.players}. {detail}\n")
-            print(f"  email: {sdetail}")
+    for i, orig in enumerate(given):
+        if booked_mins:
+            # Keep the originally-requested gap from the round we actually booked,
+            # but never less than the 3-hour minimum between rounds.
+            target = booked_mins[-1] + max(orig - given[i - 1], MIN_GAP)
+        else:
+            target = orig
+        want = label(target)
+        # Nearest-first candidates: within 2h of the wanted time, not already
+        # booked, and at least 3h after every round already booked this run.
+        cands = sorted(
+            (m for m in available
+             if abs(m - target) <= NEAREST_WINDOW and m not in booked_mins
+             and all(m - b >= MIN_GAP for b in booked_mins)),
+            key=lambda m: (abs(m - target), m))
+        gapnote = f" (needs 3h+ after {label(booked_mins[-1])})" if booked_mins else ""
+        outcome = (want, False, f"no open slot within 2h of {want}{gapnote}")
+        for m in cands[:6]:
+            lbl = label(m)
+            how = "exact" if m == target else f"nearest to {want}"
+            print(f"[{datetime.now():%H:%M:%S}] Booking {lbl} ({how}) on "
+                  f"{args.date} for {args.players}...")
+            emit(state="booking", message=f"Booking {lbl} on {args.date}...")
+            try:
+                ok, detail = book_member(page, args.date, lbl, args.players,
+                                         dry_run=args.dry_run)
+            except Exception as e:
+                ok, detail = False, f"{type(e).__name__}: {e}"
+            print(f"  -> {'OK' if ok else 'FAIL'}: {detail}")
+            if ok:
+                outcome = (lbl, True, f"{how}; {detail}")
+                booked_mins.append(m)
+                available.remove(m)
+                break
+            outcome = (lbl, False, f"{how}; {detail}")
+        if not outcome[1]:
+            print(f"[{datetime.now():%H:%M:%S}] {want}: could not book — {outcome[2]}")
+        results.append(outcome)
     booked = [r for r in results if r[1]]
     emit(state="booked" if booked else "error",
          message="; ".join(f"{l}: {'ok' if ok else 'fail'}" for l, ok, _ in results),
          booked_date=args.date)
+
+    # Email one summary per run (successes and failures), so you always know the
+    # outcome. Recipient comes from --notify-email or SKYWAY_NOTIFY_EMAIL (.env).
+    recipient = args.notify_email or os.environ.get("SKYWAY_NOTIFY_EMAIL")
+    if recipient and not args.dry_run:
+        lines = [f"{'BOOKED ' if ok else 'FAILED '} {lbl}: {detail}"
+                 for lbl, ok, detail in results]
+        subject = (f"Skyway {args.date}: {len(booked)}/{len(results)} booked "
+                   f"({args.players} players)")
+        body = (f"Tee time booking run for {args.date}, {args.players} players:\n\n"
+                + "\n".join(lines) + "\n")
+        _, sdetail = send_confirmation_email(recipient, subject, body)
+        print(f"  summary email: {sdetail}")
     return results
 
 
@@ -626,8 +687,9 @@ def main():
                          "'msedge' to force one, or '' to force bundled Chromium.")
     ap.add_argument("--status-file", help="write live JSON status here (for the web frontend)")
     ap.add_argument("--notify-email", help="email address to send a booking confirmation to")
-    ap.add_argument("--times", help="resident booking: comma-separated exact tee "
-                    "times to book, HH:MM (e.g. 09:00,11:30)")
+    ap.add_argument("--times", help="resident booking: comma-separated preferred "
+                    "tee times, HH:MM (e.g. 07:00,10:30). Books the nearest open "
+                    "slot within 2h if the exact time isn't available.")
     args = ap.parse_args()
 
     if not args.login:

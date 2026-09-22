@@ -3,272 +3,172 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Skyway Tee Time Bot</title>
+<title>Skyway Tee Time Bot — Settings</title>
 <style>
   :root {
-    --green:        #1f7a3d;
-    --green-deep:   #0e3d1e;
-    --green-mid:    #155c2c;
-    --green-bright: #2fa855;
-    --green-tint:   #eaf5ee;
-    --green-tint2:  #dcefe2;
-    --card:  #ffffff;
-    --line:  #cfe3d5;
-    --text:  #12271a;
-    --muted: #5c7264;
-    --red:   #c0392b;
-    --amber: #b8860b;
+    --green:#1f7a3d; --green-deep:#0e3d1e; --green-mid:#155c2c; --green-bright:#2fa855;
+    --green-tint:#eaf5ee; --line:#cfe3d5; --text:#12271a; --muted:#5c7264; --card:#fff;
   }
-  * { box-sizing: border-box; }
-  body {
-    margin: 0; font: 15px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-    color: var(--text);
-    background: linear-gradient(160deg, #0e3d1e 0%, #155c2c 45%, #1f7a3d 100%);
-    min-height: 100vh;
-  }
-  .wrap { max-width: 580px; margin: 0 auto; padding: 34px 20px 60px; }
-  header { display: flex; align-items: center; gap: 12px; margin-bottom: 24px; color: #fff; }
-  header .ball { font-size: 30px; }
-  header h1 { font-size: 22px; margin: 0; font-weight: 700; letter-spacing: -.01em; }
-  header .tag { font-size: 13px; opacity: .8; margin-left: auto; }
-  .card {
-    background: var(--card); border: 1px solid var(--line); border-radius: 14px;
-    padding: 22px; margin-bottom: 18px; box-shadow: 0 6px 24px rgba(8, 40, 20, .18);
-  }
-  h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .07em;
-       color: var(--green-mid); margin: 0 0 16px; font-weight: 700; }
-  label { display: block; font-size: 13px; color: var(--muted); margin-bottom: 5px; font-weight: 500; }
-  input, select {
-    width: 100%; padding: 10px 12px; border: 1px solid var(--line); border-radius: 9px;
-    font-size: 15px; background: #fbfefc; color: var(--text);
-  }
-  input:focus, select:focus { outline: 2px solid var(--green-bright); border-color: var(--green-bright); }
-  .row { display: flex; gap: 12px; }
-  .row > div { flex: 1; }
-  .field { margin-bottom: 15px; }
-  .checkbox { display: flex; align-items: center; gap: 8px; }
-  .checkbox input { width: auto; accent-color: var(--green); }
-  .checkbox label { margin: 0; }
-  .btns { display: flex; gap: 10px; margin-top: 6px; }
-  button {
-    flex: 1; padding: 13px; border: none; border-radius: 9px; font-size: 15px;
-    font-weight: 650; cursor: pointer; transition: background .15s, opacity .15s, transform .05s;
-  }
-  button:active { transform: translateY(1px); }
-  #startBtn { background: var(--green); color: #fff; }
-  #startBtn:hover { background: var(--green-mid); }
-  #stopBtn { background: #fff; color: var(--green-mid); border: 1.5px solid var(--green); }
-  #stopBtn:hover { background: var(--green-tint); }
-  button:disabled { opacity: .4; cursor: not-allowed; }
-
-  /* Status card — green forward */
-  .status { border-top: 4px solid var(--green); }
-  .status-head { display: flex; align-items: center; gap: 11px; margin-bottom: 10px; }
-  .dot { width: 12px; height: 12px; border-radius: 50%; background: var(--muted); flex: none; }
-  .dot.on     { background: var(--green-bright); box-shadow: 0 0 0 4px rgba(47,168,85,.22); animation: pulse 1.6s infinite; }
-  .dot.booked { background: var(--green); box-shadow: 0 0 0 4px rgba(31,122,61,.25); }
-  .dot.error  { background: var(--red); }
-  .dot.waiting{ background: var(--amber); }
-  @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: .4; } }
-  .state-label { font-weight: 700; font-size: 17px; text-transform: capitalize; color: var(--green-deep); }
-  .msg { color: var(--muted); margin: 2px 0 0; }
-  .booked-box {
-    margin-top: 16px; padding: 18px; border-radius: 12px; text-align: center;
-    background: linear-gradient(150deg, var(--green-tint) 0%, var(--green-tint2) 100%);
-    border: 1px solid var(--line);
-  }
-  .booked-box .time { font-size: 30px; font-weight: 800; color: var(--green-deep); letter-spacing: -.01em; }
-  .booked-box .sub { color: var(--green-mid); font-size: 13px; margin-top: 4px; }
-  .booked-box .email { color: var(--muted); font-size: 12px; margin-top: 8px; }
-  .meta { display: flex; justify-content: space-between; font-size: 12px;
-          color: var(--muted); margin-top: 14px; }
-  .toast {
-    position: fixed; bottom: 22px; left: 50%; transform: translateX(-50%);
-    background: var(--green-deep); color: #fff; padding: 11px 20px; border-radius: 9px;
-    font-size: 14px; opacity: 0; pointer-events: none; transition: opacity .2s;
-    box-shadow: 0 6px 20px rgba(8,40,20,.35);
-  }
-  .toast.show { opacity: 1; }
-  .hint { font-size: 12px; color: var(--muted); margin: -6px 0 0; }
+  * { box-sizing:border-box; }
+  body { margin:0; color:var(--text); min-height:100vh;
+    font:15px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+    background:linear-gradient(160deg,#0e3d1e 0%,#155c2c 45%,#1f7a3d 100%); }
+  .wrap { max-width:560px; margin:0 auto; padding:32px 20px 60px; }
+  header { display:flex; align-items:center; gap:11px; color:#fff; margin-bottom:22px; }
+  header .ball { font-size:28px; } header h1 { font-size:21px; margin:0; font-weight:700; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:14px;
+    padding:22px; margin-bottom:18px; box-shadow:0 6px 24px rgba(8,40,20,.18); }
+  h2 { font-size:12px; text-transform:uppercase; letter-spacing:.06em; color:var(--green-mid);
+    margin:0 0 14px; font-weight:700; }
+  label { display:block; font-size:13px; color:var(--muted); margin-bottom:6px; font-weight:500; }
+  input,select { padding:10px 12px; border:1px solid var(--line); border-radius:9px;
+    font-size:15px; background:#fbfefc; color:var(--text); }
+  input:focus,select:focus { outline:2px solid var(--green-bright); border-color:var(--green-bright); }
+  .days { display:flex; flex-wrap:wrap; gap:8px; }
+  .day { position:relative; }
+  .day input { position:absolute; opacity:0; }
+  .day span { display:inline-block; padding:8px 13px; border:1.5px solid var(--line);
+    border-radius:999px; cursor:pointer; font-size:14px; user-select:none; background:#fbfefc; }
+  .day input:checked + span { background:var(--green); color:#fff; border-color:var(--green); }
+  .times-row { display:flex; align-items:center; gap:8px; margin-bottom:8px; }
+  .times-row input { flex:1; }
+  .times-row button, .addbtn { border:none; cursor:pointer; border-radius:8px; font-weight:600; }
+  .times-row button { background:#fdeceb; color:#c0392b; width:38px; height:38px; font-size:18px; }
+  .addbtn { background:var(--green-tint); color:var(--green-mid); padding:8px 12px; font-size:14px; margin-top:2px; }
+  .field { margin-bottom:16px; } .field:last-child { margin-bottom:0; }
+  .row2 { display:flex; gap:14px; } .row2 > div { flex:1; }
+  #save { width:100%; padding:14px; border:none; border-radius:10px; background:var(--green);
+    color:#fff; font-size:16px; font-weight:650; cursor:pointer; }
+  #save:hover { background:var(--green-mid); }
+  .hint { font-size:12px; color:var(--muted); margin:6px 0 0; }
+  .result { display:none; }
+  .result.show { display:block; }
+  .ok-banner { background:var(--green-tint); border:1px solid var(--line); border-radius:10px;
+    padding:12px 14px; color:var(--green-deep); font-weight:600; margin-bottom:14px; }
+  .cmd { background:#0e3d1e; color:#eafaef; border-radius:10px; padding:14px; font-size:13px;
+    font-family:ui-monospace,SFMono-Regular,Menlo,monospace; word-break:break-all; position:relative; }
+  .cmd button { position:absolute; top:8px; right:8px; background:#2fa855; color:#fff;
+    border:none; border-radius:6px; padding:5px 10px; font-size:12px; cursor:pointer; font-weight:600; }
+  .plan { font-size:13px; color:var(--muted); margin-top:12px; line-height:1.7; }
+  .plan b { color:var(--green-deep); }
+  select { width:100%; }
+  input[type=time] { width:100%; }
 </style>
 </head>
 <body>
 <div class="wrap">
-  <header>
-    <span class="ball">⛳</span>
-    <h1>Skyway Tee Time Bot</h1>
-    <span class="tag">Chronogolf</span>
-  </header>
+  <header><span class="ball">⛳</span><h1>Tee Time Bot — Settings</h1></header>
 
-  <!-- Live status -->
-  <div class="card status">
-    <h2>Status</h2>
-    <div class="status-head">
-      <span class="dot" id="dot"></span>
-      <span class="state-label" id="stateLabel">Loading…</span>
-    </div>
-    <p class="msg" id="statusMsg"></p>
-    <div class="booked-box" id="bookedBox" style="display:none">
-      <div class="time" id="bookedTime"></div>
-      <div class="sub" id="bookedSub"></div>
-      <div class="email" id="bookedEmail"></div>
-    </div>
-    <div class="meta">
-      <span id="watching"></span>
-      <span id="updated"></span>
+  <div class="card">
+    <h2>Days to book</h2>
+    <div class="days" id="days"></div>
+    <p class="hint">The bot fires at midnight on each of these days and books that same
+      weekday 7 days out (when it releases).</p>
+  </div>
+
+  <div class="card">
+    <h2>Wake time</h2>
+    <div class="field">
+      <input type="time" id="wake" min="22:00" max="23:59">
+      <p class="hint">When the Mac wakes the night before, so it's ready to book at
+        midnight (when tee times release). Late evening only (22:00–23:59).</p>
     </div>
   </div>
 
-  <!-- Controls -->
   <div class="card">
-    <h2>Booking settings</h2>
-    <div class="field">
-      <label for="date">Play date</label>
-      <input type="date" id="date">
-    </div>
-    <div class="row">
-      <div class="field">
-        <label for="earliest">Earliest tee time</label>
-        <input type="time" id="earliest" value="07:00">
+    <h2>Ideal tee times</h2>
+    <div id="times"></div>
+    <button class="addbtn" id="addTime" type="button">+ Add a time</button>
+    <p class="hint">Books the exact time, or the nearest open foursome within 2h. Each
+      round after the first is placed ≥3h after it (ideally the same gap you set here).</p>
+  </div>
+
+  <div class="card">
+    <h2>Party size</h2>
+    <select id="players">
+      <option value="1">1 player</option><option value="2">2 players</option>
+      <option value="3">3 players</option><option value="4">4 players</option>
+    </select>
+  </div>
+
+  <div class="card">
+    <button id="save">Save settings</button>
+    <div class="result" id="result">
+      <div class="ok-banner" id="okBanner"></div>
+      <div id="pmsetWrap">
+        <p class="hint" style="margin-bottom:6px">If you changed the days or wake time, run
+          this once in Terminal to update the wake (needs admin):</p>
+        <div class="cmd"><button id="copyBtn" type="button">Copy</button><span id="pmsetCmd"></span></div>
       </div>
-      <div class="field">
-        <label for="latest">Latest tee time</label>
-        <input type="time" id="latest" value="09:30">
-      </div>
-    </div>
-    <div class="row">
-      <div class="field">
-        <label for="players">Players</label>
-        <select id="players">
-          <option>1</option><option selected>2</option><option>3</option><option>4</option>
-        </select>
-      </div>
-      <div class="field">
-        <label for="startAt">Start at (optional)</label>
-        <input type="time" id="startAt" placeholder="--:--">
-      </div>
-    </div>
-    <div class="field">
-      <label for="email">Confirmation email</label>
-      <input type="email" id="email" placeholder="you@example.com">
-      <p class="hint">Emailed the moment a tee time is booked. Leave blank to use
-        <code>SKYWAY_NOTIFY_EMAIL</code>. Requires SMTP config — see README.</p>
-    </div>
-    <div class="field checkbox">
-      <input type="checkbox" id="dryRun">
-      <label for="dryRun">Dry run (find a slot but stop before the final confirm)</label>
-    </div>
-    <div class="btns">
-      <button id="startBtn">Turn on</button>
-      <button id="stopBtn">Turn off</button>
+      <div class="plan" id="plan"></div>
     </div>
   </div>
 </div>
 
-<div class="toast" id="toast"></div>
-
 <script>
 const $ = id => document.getElementById(id);
-const STATES = {
-  idle:      { label: "Off",        cls: "" },
-  starting:  { label: "Starting",   cls: "on" },
-  waiting:   { label: "Waiting",    cls: "waiting" },
-  searching: { label: "Searching",  cls: "on" },
-  found:     { label: "Found slot", cls: "on" },
-  booking:   { label: "Booking",    cls: "on" },
-  booked:    { label: "Booked!",    cls: "booked" },
-  gave_up:   { label: "Gave up",    cls: "" },
-  stopped:   { label: "Off",        cls: "" },
-  error:     { label: "Error",      cls: "error" },
+const DAYS = ["Monday","Tuesday","Wednesday","Thursday","Friday","Saturday","Sunday"];
+
+// build day chips
+$("days").innerHTML = DAYS.map(d =>
+  `<label class="day"><input type="checkbox" value="${d}"><span>${d.slice(0,3)}</span></label>`
+).join("");
+
+function addTimeRow(val) {
+  const row = document.createElement("div");
+  row.className = "times-row";
+  row.innerHTML = `<input type="time" value="${val||''}">` +
+    `<button type="button" title="remove">×</button>`;
+  row.querySelector("button").onclick = () => row.remove();
+  $("times").appendChild(row);
+}
+$("addTime").onclick = () => addTimeRow("");
+
+function fill(cfg) {
+  document.querySelectorAll(".day input").forEach(cb => cb.checked = cfg.days.includes(cb.value));
+  $("wake").value = cfg.wake_time;
+  $("times").innerHTML = "";
+  (cfg.times.length ? cfg.times : ["07:00"]).forEach(addTimeRow);
+  $("players").value = String(cfg.players);
+}
+
+function renderResult(data) {
+  $("result").classList.add("show");
+  $("okBanner").textContent = "✓ " + data.message;
+  $("pmsetCmd").textContent = data.pmset_cmd;
+  const s = data.summary;
+  $("plan").innerHTML =
+    `<b>Books:</b> ${s.book_days.join(", ")} at 12:00 AM &nbsp;•&nbsp; ` +
+    `<b>Wakes:</b> ${s.wake_days.join(", ")} at ${s.wake_time}`;
+}
+
+$("copyBtn").onclick = () => {
+  navigator.clipboard.writeText($("pmsetCmd").textContent);
+  $("copyBtn").textContent = "Copied";
+  setTimeout(() => $("copyBtn").textContent = "Copy", 1500);
 };
-const EMAIL_KEY = "skyway_confirmation_email";
 
-function toast(msg) {
-  const t = $("toast");
-  t.textContent = msg; t.classList.add("show");
-  clearTimeout(t._h); t._h = setTimeout(() => t.classList.remove("show"), 2800);
-}
-
-async function refresh() {
-  let s;
-  try {
-    s = await (await fetch("/api/status")).json();
-  } catch (e) { return; }
-
-  const info = STATES[s.state] || { label: s.state || "Unknown", cls: "" };
-  $("dot").className = "dot " + info.cls;
-  $("stateLabel").textContent = info.label;
-  $("statusMsg").textContent = s.message || "";
-
-  // Booking confirmation
-  if (s.state === "booked" && s.booked_time) {
-    $("bookedBox").style.display = "";
-    $("bookedTime").textContent = s.booked_time;
-    $("bookedSub").textContent =
-      `Confirmed for ${s.booked_date || ""} · ${s.players || ""} player(s)` +
-      (s.booked_at ? ` · at ${s.booked_at.replace("T", " ")}` : "");
-    if (s.email_sent === true) {
-      $("bookedEmail").textContent = "✉︎ Confirmation email sent — " + (s.email_detail || "");
-    } else if (s.email_detail) {
-      $("bookedEmail").textContent = "✉︎ Email not sent — " + s.email_detail;
-    } else {
-      $("bookedEmail").textContent = "";
-    }
-  } else {
-    $("bookedBox").style.display = "none";
-  }
-
-  // Watching line
-  if (s.date && (s.running || s.state === "booked")) {
-    $("watching").textContent = `${s.date} · ${s.earliest}–${s.latest} · ${s.players}p`;
-  } else {
-    $("watching").textContent = "";
-  }
-  $("updated").textContent = s.updated_at ? "updated " + s.updated_at.replace("T", " ") : "";
-
-  // Button enablement
-  $("startBtn").disabled = !!s.running;
-  $("stopBtn").disabled = !s.running;
-  $("startBtn").textContent = s.running ? "Running…" : "Turn on";
-}
-
-$("startBtn").onclick = async () => {
-  localStorage.setItem(EMAIL_KEY, $("email").value);
+$("save").onclick = async () => {
   const cfg = {
-    date: $("date").value,
-    earliest: $("earliest").value,
-    latest: $("latest").value,
+    days: [...document.querySelectorAll(".day input:checked")].map(c => c.value),
+    wake_time: $("wake").value,
+    times: [...$("times").querySelectorAll("input")].map(i => i.value).filter(Boolean),
     players: parseInt($("players").value, 10),
-    start_at: $("startAt").value,
-    notify_email: $("email").value,
-    dry_run: $("dryRun").checked,
   };
-  const r = await fetch("/api/start", {
-    method: "POST", headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(cfg),
-  });
+  $("save").textContent = "Saving…"; $("save").disabled = true;
+  const r = await fetch("/api/config", {
+    method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(cfg)});
   const data = await r.json();
-  toast(data.message);
-  refresh();
+  $("save").textContent = "Save settings"; $("save").disabled = false;
+  if (data.ok) renderResult(data);
+  else { $("result").classList.add("show"); $("okBanner").textContent = "⚠ " + data.message;
+         $("pmsetWrap").style.display = "none"; $("plan").innerHTML = ""; }
 };
 
-$("stopBtn").onclick = async () => {
-  const r = await fetch("/api/stop", { method: "POST" });
-  const data = await r.json();
-  toast(data.message);
-  refresh();
-};
-
-// Convenience defaults: date = tomorrow, remember the email address.
-(() => {
-  const d = new Date(); d.setDate(d.getDate() + 1);
-  $("date").value = d.toISOString().slice(0, 10);
-  const saved = localStorage.getItem(EMAIL_KEY);
-  if (saved) $("email").value = saved;
+(async () => {
+  const data = await (await fetch("/api/config")).json();
+  fill(data.config);
 })();
-
-refresh();
-setInterval(refresh, 3000);
 </script>
 </body>
 </html>

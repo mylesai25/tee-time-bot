@@ -1,8 +1,9 @@
 ===================================================================
-FIRED: 2026-09-20 00:14:53 EDT
+FIRED: 2026-09-21 14:56:43 EDT  (target 2026-09-28, times 07:00 + 10:30, 4 players)
 Using browser channel: chrome
-[00:14:55] Booking 9:00 AM on 2026-09-27 for 4...
-  -> FAIL: 9:00 AM not available
-[00:18:08] Booking 11:30 AM on 2026-09-27 for 4...
-  -> FAIL: 11:30 AM not available
-DONE: 2026-09-20 00:27:05 EDT (exit 0)
+[14:56:50] Booking 7:00 AM on 2026-09-28 for 4...
+  -> FAIL: 7:00 AM not available
+[14:57:26] Booking 10:30 AM on 2026-09-28 for 4...
+  -> FAIL: 10:30 AM not available
+  summary email: sent to myles@mylesai.com
+DONE: 2026-09-21 14:58:02 EDT (exit 0)

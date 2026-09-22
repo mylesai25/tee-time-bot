@@ -1,177 +1,147 @@
 #!/usr/bin/env python3
 """
-Control-panel backend for the Skyway tee time bot.
+Config panel for the Skyway weekend tee-time bot.
 
-Serves the web frontend (index.html) and a small JSON API to turn the bot on
-and off and read its live status. Uses only the Python standard library, so
-there is nothing extra to install for the panel itself (the bot still needs
-Playwright per the README).
+Serves a small web UI to edit config.json (which days to book, the wake time,
+the ideal tee times, and party size). On save it regenerates the launchd jobs
+so the schedule matches, and returns the one `sudo pmset` command you need to
+run to update the wake (that step needs admin rights, which the server can't).
 
-Run
-    python server.py            # then open http://localhost:8000
-
-The bot writes its progress to status.json; this server starts/stops the bot
-as a subprocess and reports whether it is currently running.
+Run:  python server.py     # then open http://localhost:8000
+Uses only the Python standard library.
 """
 import json
 import os
-import re
-import signal
 import subprocess
 import sys
-from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
-BOT = HERE / "skyway_bot.py"
-# Run the bot with the project venv's Python (where Playwright is installed),
-# falling back to whatever Python is running this server.
-_VENV_PY = HERE / ".venv" / "bin" / "python"
-BOT_PYTHON = str(_VENV_PY) if _VENV_PY.exists() else sys.executable
 INDEX = HERE / "index.html"
-STATUS_FILE = HERE / "status.json"
-PID_FILE = HERE / "bot.pid"
-
-VALID_TIME = re.compile(r"^\d{2}:\d{2}$")
-
-
-def load_env_file(path=HERE / ".env"):
-    """Load KEY=VALUE lines from a local .env into the environment, if present.
-
-    Keeps personal config (email addresses, SMTP password) out of the source
-    tree. Existing environment variables always win. The bot subprocess
-    inherits these, so credentials set here reach it too.
-    """
-    if not path.exists():
-        return
-    for line in path.read_text().splitlines():
-        line = line.strip()
-        if not line or line.startswith("#") or "=" not in line:
-            continue
-        key, _, value = line.partition("=")
-        os.environ.setdefault(key.strip(), value.strip().strip('"').strip("'"))
-
-
-load_env_file()
+CONFIG = HERE / "config.json"
+WRAPPER = HERE / "run_scheduled.sh"
+AGENTS = Path.home() / "Library" / "LaunchAgents"
+BOOK_PLIST = AGENTS / "com.skyway.teetimebot.plist"
+WAKE_PLIST = AGENTS / "com.skyway.stayawake.plist"
 PORT = int(os.environ.get("PORT", "8000"))
 
+DAYS_ORDER = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday",
+              "Friday", "Saturday"]
+WD = {name: i for i, name in enumerate(DAYS_ORDER)}          # Sunday=0 .. Saturday=6
+PMSET_CODE = {0: "U", 1: "M", 2: "T", 3: "W", 4: "R", 5: "F", 6: "S"}
+DEFAULT = {"days": ["Saturday", "Sunday"], "wake_time": "23:52",
+           "times": ["07:00", "10:30"], "players": 4}
 
-# ---------- process management ----------
 
-def _pid_alive(pid):
+def night_before(weekday):
+    return (weekday + 6) % 7
+
+
+def read_config():
     try:
-        os.kill(pid, 0)
+        cfg = json.loads(CONFIG.read_text())
     except (OSError, ValueError):
-        return False
-    return True
+        cfg = dict(DEFAULT)
+    return cfg
 
 
-def running_pid():
-    """Return the PID of a live bot process, or None."""
-    if not PID_FILE.exists():
-        return None
+def validate(cfg):
+    days = [d for d in cfg.get("days", []) if d in WD]
+    if not days:
+        return None, "Pick at least one day."
+    wake = str(cfg.get("wake_time", "")).strip()
+    import re
+    if not re.match(r"^\d{2}:\d{2}$", wake):
+        return None, "Wake time must be HH:MM."
+    wh, wm = int(wake[:2]), int(wake[3:])
+    if not (0 <= wh < 24 and 0 <= wm < 60) or wh < 22:
+        return None, "Wake time must be a late-evening time (22:00–23:59), before the midnight booking."
+    times = [t.strip() for t in cfg.get("times", []) if str(t).strip()]
+    if not times or any(not re.match(r"^\d{2}:\d{2}$", t) for t in times):
+        return None, "Each tee time must be HH:MM."
     try:
-        pid = int(PID_FILE.read_text().strip())
-    except (ValueError, OSError):
-        return None
-    return pid if _pid_alive(pid) else None
-
-
-def start_bot(cfg):
-    """Launch the bot with the given config. Returns (ok, message)."""
-    if running_pid():
-        return False, "Bot is already running."
-
-    date = str(cfg.get("date", "")).strip()
-    try:
-        datetime.strptime(date, "%Y-%m-%d")
-    except ValueError:
-        return False, "Date must be YYYY-MM-DD."
-
-    earliest = str(cfg.get("earliest", "06:00")).strip()
-    latest = str(cfg.get("latest", "10:00")).strip()
-    if not VALID_TIME.match(earliest) or not VALID_TIME.match(latest):
-        return False, "Times must be HH:MM (24-hour)."
-
-    try:
-        players = int(cfg.get("players", 2))
+        players = int(cfg.get("players", 4))
     except (TypeError, ValueError):
-        return False, "Players must be a number."
+        return None, "Players must be a number."
     if players not in (1, 2, 3, 4):
-        return False, "Players must be 1-4."
-
-    cmd = [BOT_PYTHON, str(BOT),
-           "--date", date,
-           "--earliest", earliest,
-           "--latest", latest,
-           "--players", str(players),
-           "--headless",
-           "--status-file", str(STATUS_FILE)]
-
-    notify_email = (str(cfg.get("notify_email", "")).strip()
-                    or os.environ.get("SKYWAY_NOTIFY_EMAIL", "").strip())
-    if notify_email:
-        cmd += ["--notify-email", notify_email]
-
-    start_at = str(cfg.get("start_at", "")).strip()
-    if start_at:
-        if not VALID_TIME.match(start_at):
-            return False, "Start-at time must be HH:MM (24-hour)."
-        cmd += ["--start-at", start_at]
-
-    try:
-        poll = int(cfg.get("poll", 60))
-        cmd += ["--poll", str(poll)]
-    except (TypeError, ValueError):
-        pass
-
-    if cfg.get("dry_run"):
-        cmd.append("--dry-run")
-
-    # Fresh status so the panel doesn't show a stale "booked" from last time.
-    STATUS_FILE.write_text(json.dumps({
-        "state": "starting", "message": "Launching bot...",
-        "date": date, "earliest": earliest, "latest": latest, "players": players,
-        "updated_at": datetime.now().isoformat(timespec="seconds"),
-    }, indent=2))
-
-    proc = subprocess.Popen(cmd, cwd=str(HERE))
-    PID_FILE.write_text(str(proc.pid))
-    return True, f"Bot started (pid {proc.pid})."
+        return None, "Players must be 1–4."
+    return {"days": days, "wake_time": wake, "times": times, "players": players}, None
 
 
-def stop_bot():
-    """Stop a running bot. Returns (ok, message)."""
-    pid = running_pid()
-    if not pid:
-        PID_FILE.unlink(missing_ok=True)
-        return False, "Bot is not running."
-    try:
-        os.kill(pid, signal.SIGTERM)
-    except OSError as e:
-        return False, f"Could not stop bot: {e}"
-    PID_FILE.unlink(missing_ok=True)
+# ---------- launchd plist generation ----------
 
-    # Reflect the stop in status.json unless the bot already finished/booked.
-    try:
-        status = json.loads(STATUS_FILE.read_text())
-    except (OSError, ValueError):
-        status = {}
-    if status.get("state") not in ("booked", "gave_up"):
-        status.update(state="stopped", message="Bot stopped.",
-                      updated_at=datetime.now().isoformat(timespec="seconds"))
-        STATUS_FILE.write_text(json.dumps(status, indent=2))
-    return True, "Bot stopped."
+def _intervals(entries):
+    out = []
+    for wd, h, m in entries:
+        out.append(
+            "        <dict>\n"
+            f"            <key>Weekday</key><integer>{wd}</integer>\n"
+            f"            <key>Hour</key><integer>{h}</integer>\n"
+            f"            <key>Minute</key><integer>{m}</integer>\n"
+            "        </dict>")
+    return "\n".join(out)
 
 
-def read_status():
-    try:
-        status = json.loads(STATUS_FILE.read_text())
-    except (OSError, ValueError):
-        status = {"state": "idle", "message": "Bot has not been started yet."}
-    status["running"] = running_pid() is not None
-    return status
+def _plist(label, program_args, entries):
+    args_xml = "\n".join(f"        <string>{a}</string>" for a in program_args)
+    logs = ""
+    if label == "com.skyway.teetimebot":
+        logs = (f"    <key>StandardOutPath</key><string>{HERE}/launchd.out.log</string>\n"
+                f"    <key>StandardErrorPath</key><string>{HERE}/launchd.err.log</string>\n")
+    return (
+        '<?xml version="1.0" encoding="UTF-8"?>\n'
+        '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" '
+        '"http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n'
+        '<plist version="1.0">\n<dict>\n'
+        f"    <key>Label</key><string>{label}</string>\n"
+        "    <key>ProgramArguments</key>\n    <array>\n" + args_xml + "\n    </array>\n"
+        "    <key>StartCalendarInterval</key>\n    <array>\n"
+        + _intervals(entries) + "\n    </array>\n" + logs +
+        "</dict>\n</plist>\n")
+
+
+def add_minutes(h, m, delta):
+    total = (h * 60 + m + delta) % (24 * 60)
+    return total // 60, total % 60
+
+
+def apply_config(cfg):
+    """Write config, regenerate + reload launchd jobs. Returns the pmset command."""
+    CONFIG.write_text(json.dumps(cfg, indent=2) + "\n")
+
+    book_wds = [WD[d] for d in cfg["days"]]
+    wh, wm = int(cfg["wake_time"][:2]), int(cfg["wake_time"][3:])
+    ch, cm = add_minutes(wh, wm, 2)                   # caffeinate 2 min after wake
+    wake_wds = [night_before(w) for w in book_wds]    # wake the night before each booking
+
+    BOOK_PLIST.write_text(_plist(
+        "com.skyway.teetimebot", ["/bin/bash", str(WRAPPER)],
+        [(w, 0, 0) for w in book_wds]))               # book at 00:00 on booking days
+    WAKE_PLIST.write_text(_plist(
+        "com.skyway.stayawake", ["/usr/bin/caffeinate", "-dimsu", "-t", "2400"],
+        [(w, ch, cm) for w in wake_wds]))             # caffeinate the night before
+
+    for plist in (BOOK_PLIST, WAKE_PLIST):
+        subprocess.run(["launchctl", "unload", str(plist)],
+                       capture_output=True)
+        subprocess.run(["launchctl", "load", str(plist)], capture_output=True)
+
+    codes = "".join(PMSET_CODE[w] for w in sorted(set(wake_wds)))
+    return f"sudo pmset repeat wake {codes} {cfg['wake_time']}:00"
+
+
+def summary(cfg):
+    book_wds = sorted({WD[d] for d in cfg["days"]})
+    wake_days = [DAYS_ORDER[night_before(w)] for w in book_wds]
+    return {
+        "book_days": [DAYS_ORDER[w] for w in book_wds],
+        "wake_days": wake_days,
+        "wake_time": cfg["wake_time"],
+        "pmset_cmd": f"sudo pmset repeat wake "
+                     f"{''.join(PMSET_CODE[night_before(w)] for w in book_wds)} "
+                     f"{cfg['wake_time']}:00",
+    }
 
 
 # ---------- HTTP ----------
@@ -188,48 +158,48 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
-    def _read_json(self):
-        length = int(self.headers.get("Content-Length", 0))
-        if not length:
-            return {}
-        try:
-            return json.loads(self.rfile.read(length) or b"{}")
-        except ValueError:
-            return {}
-
     def do_GET(self):
         if self.path in ("/", "/index.html"):
             try:
                 self._send(200, INDEX.read_text(), "text/html; charset=utf-8")
             except OSError:
                 self._send(500, "index.html not found", "text/plain")
-        elif self.path == "/api/status":
-            self._send(200, read_status())
+        elif self.path == "/api/config":
+            cfg = read_config()
+            self._send(200, {"config": cfg, "summary": summary(cfg)})
         else:
             self._send(404, {"error": "not found"})
 
     def do_POST(self):
-        if self.path == "/api/start":
-            ok, msg = start_bot(self._read_json())
-            self._send(200 if ok else 400, {"ok": ok, "message": msg})
-        elif self.path == "/api/stop":
-            ok, msg = stop_bot()
-            self._send(200 if ok else 400, {"ok": ok, "message": msg})
-        else:
+        if self.path != "/api/config":
             self._send(404, {"error": "not found"})
+            return
+        length = int(self.headers.get("Content-Length", 0))
+        try:
+            raw = json.loads(self.rfile.read(length) or b"{}")
+        except ValueError:
+            self._send(400, {"ok": False, "message": "bad JSON"})
+            return
+        cfg, err = validate(raw)
+        if err:
+            self._send(400, {"ok": False, "message": err})
+            return
+        pmset_cmd = apply_config(cfg)
+        self._send(200, {"ok": True, "message": "Saved and schedule updated.",
+                         "config": cfg, "summary": summary(cfg),
+                         "pmset_cmd": pmset_cmd})
 
-    def log_message(self, *args):  # quieter console
+    def log_message(self, *args):
         pass
 
 
 def main():
     server = ThreadingHTTPServer(("127.0.0.1", PORT), Handler)
-    print(f"Skyway bot control panel: http://localhost:{PORT}")
-    print("Press Ctrl+C to stop the panel (the bot keeps running if started).")
+    print(f"Skyway config panel: http://localhost:{PORT}")
+    print("Ctrl+C to stop (the scheduled jobs keep running).")
     try:
         server.serve_forever()
     except KeyboardInterrupt:
-        print("\nShutting down panel.")
         server.shutdown()
 
 
