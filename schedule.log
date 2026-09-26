@@ -7,3 +7,28 @@ Using browser channel: chrome
   -> FAIL: 10:30 AM not available
   summary email: sent to myles@mylesai.com
 DONE: 2026-09-21 14:58:02 EDT (exit 0)
+===================================================================
+FIRED: 2026-09-26 00:00:00 EDT  (target 2026-10-03, times 07:30,10:30, 4 players)
+Using browser channel: chrome
+[00:00:07] 7:30 AM: could not book — no open slot within 2h of 7:30 AM
+[00:00:07] Booking 10:30 AM (exact) on 2026-10-03 for 4...
+  -> FAIL: TimeoutError: Locator.click: Timeout 30000ms exceeded.
+Call log:
+  - waiting for get_by_text("3", exact=True).first
+
+[00:00:44] Booking 10:40 AM (nearest to 10:30 AM) on 2026-10-03 for 4...
+  -> FAIL: TimeoutError: Locator.click: Timeout 30000ms exceeded.
+Call log:
+  - waiting for get_by_text("3", exact=True).first
+
+[00:01:21] Booking 10:50 AM (nearest to 10:30 AM) on 2026-10-03 for 4...
+  -> FAIL: TimeoutError: Locator.click: Timeout 30000ms exceeded.
+Call log:
+  - waiting for get_by_text("3", exact=True).first
+
+[00:01:58] 10:30 AM: could not book — nearest to 10:30 AM; TimeoutError: Locator.click: Timeout 30000ms exceeded.
+Call log:
+  - waiting for get_by_text("3", exact=True).first
+
+  summary email: sent to myles@mylesai.com
+DONE: 2026-09-26 00:01:59 EDT (exit 0)

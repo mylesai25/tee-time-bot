@@ -34,6 +34,9 @@ DEFAULT = {"days": ["Saturday", "Sunday"], "wake_time": "23:52",
            "times": ["07:00", "10:30"], "players": 4}
 
 
+PREWARM_AFTER_WAKE_MIN = 3   # bot fires this many minutes after the Mac wakes (23:55 -> 23:58)
+
+
 def night_before(weekday):
     return (weekday + 6) % 7
 
@@ -115,9 +118,17 @@ def apply_config(cfg):
     ch, cm = add_minutes(wh, wm, 2)                   # caffeinate 2 min after wake
     wake_wds = [night_before(w) for w in book_wds]    # wake the night before each booking
 
+    # The bot fires a few minutes before midnight on the night before, signs in
+    # and pre-warms the booking widget, then books the instant the sheet opens
+    # at 00:00 (run_scheduled.sh handles the date arithmetic). Fall back to
+    # firing at 00:00 if the wake time is so late that there's no room.
+    bh, bm = add_minutes(wh, wm, PREWARM_AFTER_WAKE_MIN)
+    if (bh, bm) > (wh, wm):                           # still before midnight
+        book_entries = [(night_before(w), bh, bm) for w in book_wds]
+    else:
+        book_entries = [(w, 0, 0) for w in book_wds]
     BOOK_PLIST.write_text(_plist(
-        "com.skyway.teetimebot", ["/bin/bash", str(WRAPPER)],
-        [(w, 0, 0) for w in book_wds]))               # book at 00:00 on booking days
+        "com.skyway.teetimebot", ["/bin/bash", str(WRAPPER)], book_entries))
     WAKE_PLIST.write_text(_plist(
         "com.skyway.stayawake", ["/usr/bin/caffeinate", "-dimsu", "-t", "2400"],
         [(w, ch, cm) for w in wake_wds]))             # caffeinate the night before
@@ -138,6 +149,9 @@ def summary(cfg):
         "book_days": [DAYS_ORDER[w] for w in book_wds],
         "wake_days": wake_days,
         "wake_time": cfg["wake_time"],
+        "fire_time": "%02d:%02d" % add_minutes(int(cfg["wake_time"][:2]),
+                                               int(cfg["wake_time"][3:]),
+                                               PREWARM_AFTER_WAKE_MIN),
         "pmset_cmd": f"sudo pmset repeat wake "
                      f"{''.join(PMSET_CODE[night_before(w)] for w in book_wds)} "
                      f"{cfg['wake_time']}:00",

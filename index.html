@@ -138,7 +138,7 @@ function renderResult(data) {
   $("pmsetCmd").textContent = data.pmset_cmd;
   const s = data.summary;
   $("plan").innerHTML =
-    `<b>Books:</b> ${s.book_days.join(", ")} at 12:00 AM &nbsp;•&nbsp; ` +
+    `<b>Books:</b> ${s.book_days.join(", ")} at 12:00 AM (bot starts ${s.fire_time} the night before) &nbsp;•&nbsp; ` +
     `<b>Wakes:</b> ${s.wake_days.join(", ")} at ${s.wake_time}`;
 }
 

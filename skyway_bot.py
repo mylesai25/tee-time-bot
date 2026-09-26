@@ -487,13 +487,156 @@ def book(page, minutes, args):
 #   Continue -> agree to terms -> Confirm Reservation.
 
 DASHBOARD_MEMBERSHIPS = "https://www.chronogolf.com/dashboard/#/memberships"
+WIDGET_TITLE = "Online Booking"
+
+# The endpoint the member widget itself calls when you click Continue at the
+# Players step. Before the day is released it answers 422 ("out of your
+# booking range"); afterwards it returns the day's tee times. Polling it is
+# therefore both the most accurate availability check for a resident and a
+# precise release detector. IDs come from the widget's own request URL.
+MEMBER_TEETIME_API = "https://www.chronogolf.com/marketplace/clubs/18930/teetimes"
+MEMBER_COURSE_ID = 23070
+RESIDENT_AFFILIATION_ID = 111289
 
 
-def choose_time(page, time_label, timeout_ms=20000):
-    """Click the 'Choose' on the tee-time row for an exact label like '9:00 AM'."""
+def member_teetimes_url(date_str, players, holes=9):
+    q = f"date={date_str}&course_id={MEMBER_COURSE_ID}&nb_holes={holes}"
+    q += "".join(f"&affiliation_type_ids%5B%5D={RESIDENT_AFFILIATION_ID}"
+                 for _ in range(players))
+    return f"{MEMBER_TEETIME_API}?{q}"
+
+
+def fetch_member_teetimes(page, date_str, players, holes=9):
+    """Ask the member endpoint for the day. Returns (released, slots).
+
+    released is False when the site says the day isn't bookable yet (HTTP 422),
+    True when it returned a tee sheet (possibly with nothing open). Any other
+    status raises.
+    """
+    status, body = page.evaluate(
+        "async (u) => { const r = await fetch(u, {headers: {accept: 'application/json'}});"
+        " return [r.status, await r.text()]; }",
+        member_teetimes_url(date_str, players, holes))
+    if status == 422:
+        return False, []
+    if status != 200:
+        raise RuntimeError(f"member teetimes HTTP {status}: {body[:120]}")
+    return True, list(find_slots(json.loads(body)))
+
+
+def open_minutes(slots, players):
+    """Sorted minutes-after-midnight of slots with room for the party."""
+    return sorted({m for m in (slot_minutes(s) for s in slots if slot_fits(s, players))
+                   if m is not None})
+
+
+def continue_btn(page):
+    return page.get_by_role("button", name="Continue").first
+
+
+def widget_is_open(page):
+    try:
+        return page.get_by_text(WIDGET_TITLE, exact=True).first.is_visible()
+    except Exception:
+        return False
+
+
+def select_calendar_day(page, date_str, timeout_ms=10000):
+    """Click the target date in the widget's calendar (UI Bootstrap datepicker).
+
+    Cells are zero-padded ("03", never "3"), and the grid also shows the
+    neighbouring months' days, so a bare text match can hit the wrong cell or
+    nothing at all. Past days are rendered as disabled buttons, and the only
+    other cell with the same number is a month away (i.e. in the past), so the
+    single *enabled* button with that text is always the right one. Bookings
+    open 7 days out, so the target is normally already on screen; if it isn't
+    (rare), step to the next month.
+    """
+    d = datetime.strptime(date_str, "%Y-%m-%d")
+    cell = re.compile(rf"^\s*{d.day:02d}\s*$")
+    page.get_by_role("button", name="Next month").first.wait_for(
+        state="visible", timeout=timeout_ms)
+    cells = page.locator("button:not([disabled])").filter(has_text=cell)
+    if cells.count() == 0:
+        page.get_by_role("button", name="Next month").first.click()
+        page.wait_for_timeout(400)
+    cells.first.click(timeout=timeout_ms)
+
+
+def open_widget_to_players(page, date_str, players):
+    """Fresh dashboard -> Book on Calendar -> date -> party size. Stops with the
+    Players step open and its Continue button ready (nothing fetched yet).
+
+    Every step waits for the next control instead of sleeping, so this takes
+    ~2s instead of the ~13s of fixed pauses it used to.
+    """
+    # A hash-route change alone won't re-render the dashboard, so force a
+    # reload to clear any widget left open by a previous attempt.
+    page.goto(DASHBOARD_MEMBERSHIPS, wait_until="domcontentloaded", timeout=45000)
+    page.reload(wait_until="domcontentloaded", timeout=45000)
+    btn = page.get_by_role("button", name="Book on Calendar").first
+    btn.wait_for(state="visible", timeout=20000)
+    btn.click()
+    select_calendar_day(page, date_str)
+    lbl = page.locator("label.toggler-heading").filter(
+        has_text=re.compile(rf"^\s*{players}\s*$")).first
+    lbl.wait_for(state="visible", timeout=15000)
+    lbl.click()
+    # The player-type block slides open under the party-size picker; let it
+    # settle so the Continue click lands after Angular has applied the types.
+    page.get_by_text("player type", exact=False).first.wait_for(state="visible", timeout=15000)
+    continue_btn(page).wait_for(state="visible", timeout=15000)
+    page.wait_for_timeout(400)
+
+
+def reopen_players_step(page):
+    """If the widget has moved past the Players step, click its Edit link so
+    Continue is available again (Continue re-fetches the tee sheet)."""
+    if continue_btn(page).is_visible():
+        return
+    page.get_by_label(re.compile("Edit Players", re.I)).first.click()
+    continue_btn(page).wait_for(state="visible", timeout=10000)
+
+
+CHOOSE = re.compile(r"^\s*Choose\b")     # the per-row "Choose" control (not "choose your player type")
+
+
+def load_teetime_list(page, timeout_ms=6000):
+    """Click Continue at the Players step and wait for the tee sheet to render.
+
+    Returns True when Choose controls are on screen, False if the widget shows
+    the "out of your booking range" alert (day not released) or nothing came.
+    Re-clicks Continue once if the first click didn't take.
+    """
+    continue_btn(page).click()
+    deadline = time.time() + timeout_ms / 1000
+    reclicked = False
+    while time.time() < deadline:
+        if page.get_by_text(CHOOSE).count() > 0:
+            return True
+        alert = page.get_by_role("alert").filter(has_text=re.compile("booking range", re.I))
+        if alert.count() > 0 and alert.first.is_visible():
+            return False
+        if not reclicked and time.time() > deadline - timeout_ms / 1000 + 2.0:
+            reclicked = True
+            try:
+                if continue_btn(page).is_visible():
+                    continue_btn(page).click(timeout=1000)
+            except Exception:
+                pass
+        page.wait_for_timeout(100)
+    return False
+
+
+def choose_time(page, time_label, timeout_ms=3000):
+    """Click the 'Choose' on the tee-time row for an exact label like '9:00 AM'.
+
+    The list has just been fetched, so if the row isn't there within a few
+    seconds it's gone: fail fast and let the caller try the next candidate.
+    """
     deadline = time.time() + timeout_ms / 1000
     while time.time() < deadline:
-        ch = page.get_by_text("Choose", exact=False)
+        ch = page.get_by_text(CHOOSE)
         for i in range(ch.count()):
             el = ch.nth(i)
             try:
@@ -506,53 +649,50 @@ def choose_time(page, time_label, timeout_ms=20000):
             if row.strip().startswith(time_label):
                 el.click()
                 return True
-        page.wait_for_timeout(1000)
+        page.wait_for_timeout(150)
     return False
 
 
 def book_member(page, date_str, time_label, players, dry_run=False):
     """Book one resident tee time through the dashboard widget.
 
-    Returns (ok, detail). Self-contained: starts from the memberships page so it
-    can be called repeatedly to book several tee times.
+    Returns (ok, detail). If the widget is already open (pre-warmed, or left
+    from a previous attempt on this run) it's reused: re-opening the Players
+    step and clicking Continue re-fetches the tee sheet in well under a second,
+    versus several seconds for a fresh dashboard load.
     """
-    day = str(datetime.strptime(date_str, "%Y-%m-%d").day)
-    # Reset to a clean memberships page (clears any widget left open by a prior
-    # booking) — a hash-route change alone won't re-render, so force a reload.
-    page.goto(DASHBOARD_MEMBERSHIPS, wait_until="domcontentloaded", timeout=45000)
-    page.wait_for_timeout(1500)
-    page.reload(wait_until="domcontentloaded")
-    page.wait_for_timeout(2500)
-    btn = page.get_by_role("button", name="Book on Calendar").first
-    btn.wait_for(state="visible", timeout=20000)
-    btn.click()
-    page.wait_for_timeout(2500)
-    page.get_by_text(day, exact=True).first.click()          # date
-    page.wait_for_timeout(1800)
-    page.get_by_text(str(players), exact=True).first.click()  # party size
-    page.wait_for_timeout(1800)
-    page.get_by_role("button", name="Continue").first.click()  # past player types
-    page.wait_for_timeout(3500)
+    if widget_is_open(page):
+        reopen_players_step(page)
+    else:
+        open_widget_to_players(page, date_str, players)
 
+    if not load_teetime_list(page):
+        return False, "tee sheet didn't load (day not released yet?)"
     if not choose_time(page, time_label):
         return False, f"{time_label} not available"
-    page.wait_for_timeout(2500)
-    page.get_by_role("button", name="Continue").first.click()  # to final review
-    page.wait_for_timeout(5000)
 
-    # Agree to the booking policy.
+    # Continue -> the review page. This is the request that places the
+    # 5-minute hold on the slot, so everything above is on the critical path.
+    nxt = continue_btn(page)
+    nxt.wait_for(state="visible", timeout=10000)
+    nxt.click()
+    t_hold = datetime.now()
+
+    # Agree to the booking policy (review page).
     try:
-        page.get_by_role("checkbox").first.check(timeout=6000)
+        box = page.get_by_role("checkbox").first
+        box.wait_for(state="visible", timeout=25000)
+        box.check(timeout=6000)
     except Exception:
         try:
-            page.get_by_text("I agree", exact=False).first.click()
+            page.get_by_text("I agree", exact=False).first.click(timeout=3000)
         except Exception:
             pass
-    page.wait_for_timeout(1000)
 
     tag = re.sub(r"\W+", "", time_label)
     if dry_run:
-        print(f"  [dry-run] reached Confirm for {time_label}: {shot(page, 'dryrun_'+tag)}")
+        print(f"  [dry-run] reached Confirm for {time_label} (hold at {t_hold:%H:%M:%S.%f}): "
+              f"{shot(page, 'dryrun_'+tag)}")
         return True, f"[dry-run] reached confirm for {time_label}"
 
     status = []
@@ -560,15 +700,82 @@ def book_member(page, date_str, time_label, players, dry_run=False):
             if ("marketplace/reservations" in r.url and r.request.method == "POST")
             else None)
     page.get_by_role("button", name=re.compile("Confirm Reservation", re.I)).first.click()
-    page.wait_for_timeout(9000)
-    body = page.inner_text("body") if page.query_selector("body") else ""
-    ok = "successfully created" in body.lower() or 201 in status
+    ok, body = False, ""
+    deadline = time.time() + 20
+    while time.time() < deadline:
+        body = page.inner_text("body") if page.query_selector("body") else ""
+        if "successfully created" in body.lower() or 201 in status:
+            ok = True
+            break
+        page.wait_for_timeout(300)
     conf = ""
     m = re.search(r"Booking\s+([A-Z0-9]{4}-[A-Z0-9]{4})", body)
     if m:
         conf = m.group(1)
     print(f"  {'Booked' if ok else 'FAILED'} {time_label}: {shot(page, 'booked_'+tag)}")
     return ok, (f"confirmed {conf}" if ok else "confirmation not detected")
+
+
+def next_occurrence(hhmm_str):
+    """Local datetime for the next HH:MM. If that time passed within the last
+    10 minutes (e.g. launchd fired us a little late), treat it as now."""
+    now = datetime.now()
+    t = now.replace(hour=int(hhmm_str[:2]), minute=int(hhmm_str[3:]), second=0, microsecond=0)
+    if t <= now:
+        if (now - t).total_seconds() < 600:
+            return t
+        t += timedelta(days=1)
+    return t
+
+
+def wait_for_release(page, date_str, players, holes, release, lead_s=30, grace_s=150):
+    """Sleep until just before `release`, then poll the member endpoint until
+    the day appears. Returns its slots (or [] if it never did).
+
+    Logs when the day was first seen, relative to the expected release time,
+    so we learn when Chronogolf really opens the sheet. If the day is already
+    open at the first poll (nothing to wait for), we still hold until the
+    nominal time so a test run behaves like a real one.
+    """
+    while (left := (release - datetime.now()).total_seconds()) > lead_s:
+        time.sleep(min(left - lead_s, 30))
+    first = None
+    polls = errors = 0
+    while True:
+        now = datetime.now()
+        rel = (now - release).total_seconds()
+        try:
+            released, slots = fetch_member_teetimes(page, date_str, players, holes)
+        except Exception as e:
+            released, slots = None, []
+            errors += 1
+            if errors in (1, 5, 20, 50):
+                print(f"  ! probe error #{errors} at T{rel:+.1f}s: {type(e).__name__}: {e}")
+            time.sleep(1.0)        # back off (a 429 here would hide the release)
+        polls += 1
+        if first is None and released is not None:
+            first = released
+            print(f"[{now:%H:%M:%S.%f}] probe: day is {'already open' if released else 'not released yet'} "
+                  f"(T{rel:+.1f}s)")
+        if released:
+            if first is False:
+                print(f"[{now:%H:%M:%S.%f}] RELEASE DETECTED at T{rel:+.2f}s after {polls} polls; "
+                      f"{len(open_minutes(slots, players))} slots open for {players}")
+                return slots
+            if rel >= 0:
+                return slots
+        elif rel >= grace_s:
+            print(f"[{now:%H:%M:%S.%f}] ! day still not released {grace_s}s after {release:%H:%M}; going anyway")
+            return []
+        # Tight polling around the release moment, relaxed further out (the
+        # public API rate-limits at ~1/s; this one tolerated ~2/s in testing).
+        # Never sleep past the nominal time itself.
+        if rel < -3:
+            time.sleep(min(2.0, -rel - 3))
+        elif rel < 0:
+            time.sleep(min(0.15, -rel))
+        else:
+            time.sleep(0.15 if rel < 5 else 0.7)
 
 
 def book_member_times(page, args):
@@ -585,13 +792,29 @@ def book_member_times(page, args):
 
     given = [hhmm(t.strip()) for t in args.times.split(",") if t.strip()]
 
-    # Times with room for the whole party (public API), as minutes-after-midnight.
-    try:
-        slots = fetch_teetimes(page, args.date, args.players, holes=args.holes)
-    except Exception as e:
-        print(f"  ! could not read availability: {type(e).__name__}: {e}")
-        slots = []
-    available = sorted({m for m in (slot_minutes(s) for s in slots) if m is not None})
+    if args.release_at:
+        # Pre-warm: get the widget to the Players step *before* the sheet opens,
+        # so at release the only work left is Continue -> Choose -> Continue.
+        release = next_occurrence(args.release_at)
+        emit(state="waiting", message=f"Pre-warming; sheet opens at {release:%H:%M}.")
+        try:
+            open_widget_to_players(page, args.date, args.players)
+            print(f"[{datetime.now():%H:%M:%S}] pre-warmed widget to Players step for "
+                  f"{args.date} ({(release - datetime.now()).total_seconds():.0f}s to release)")
+        except Exception as e:
+            print(f"  ! pre-warm failed ({type(e).__name__}: {e}); will open the widget at release")
+        slots = wait_for_release(page, args.date, args.players, args.holes, release)
+        print(f"[{datetime.now():%H:%M:%S.%f}] go")
+    else:
+        # Times with room for the whole party, as the member widget sees them.
+        try:
+            released, slots = fetch_member_teetimes(page, args.date, args.players, args.holes)
+            if not released:
+                print(f"  ! {args.date} is not open for booking yet")
+        except Exception as e:
+            print(f"  ! could not read availability: {type(e).__name__}: {e}")
+            slots = []
+    available = open_minutes(slots, args.players)
 
     booked_mins = []
     results = []
@@ -677,6 +900,9 @@ def main():
     ap.add_argument("--players", type=int, default=2, choices=[1, 2, 3, 4])
     ap.add_argument("--holes", type=int, default=9, choices=[9, 18], help="9 or 18 holes")
     ap.add_argument("--start-at", help="don't start until this local time today, HH:MM")
+    ap.add_argument("--release-at", help="resident booking: local HH:MM at which the "
+                    "target day opens (e.g. 00:00). Signs in and pre-warms the widget "
+                    "beforehand, then books the instant the sheet appears.")
     ap.add_argument("--poll", type=int, default=60, help="seconds between checks")
     ap.add_argument("--max-minutes", type=int, default=180, help="give up after this long")
     ap.add_argument("--dry-run", action="store_true", help="stop before the final confirm click")
